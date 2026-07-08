@@ -1,0 +1,13 @@
+# Build output (built by CI, published to Releases)
+*.exe
+*.pdb
+
+# Runtime data created by the tool on a Windows host — not part of the repo
+config.json
+RNDIS-NAT.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/

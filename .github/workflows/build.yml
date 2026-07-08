@@ -1,0 +1,52 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ps2exe
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name ps2exe -Force -Scope CurrentUser
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          Invoke-ps2exe -inputFile .\RNDIS-NAT-Manager.ps1 -outputFile .\RNDIS-NAT-Manager.exe -requireAdmin -title "RNDIS NAT Manager"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RNDIS-NAT-Manager-exe
+          path: RNDIS-NAT-Manager.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RNDIS-NAT-Manager-exe
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" RNDIS-NAT-Manager.exe \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
