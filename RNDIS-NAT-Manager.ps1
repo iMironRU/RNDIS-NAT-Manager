@@ -57,12 +57,22 @@ function Write-Log {
 # Оборачивает потенциально зависающий вызов (CIM/COM/сеть): пишет "->" до
 # и "<- ...[N мс]" после. Если процесс зависнет внутри $Action, в логе
 # останется одинокая "->" без пары — видно ровно, на каком вызове встало.
+# Также ловит НЕтерминирующие ошибки (-ErrorAction SilentlyContinue их не
+# выводит на экран, но они всё равно попадают в $Error) — иначе такие
+# ошибки видны в консоли как голая строка без метки времени и источника.
 function Invoke-Logged {
     param([string]$Name, [scriptblock]$Action)
     Write-Log ("-> {0}" -f $Name) 'TRACE'
+    $errCountBefore = $Error.Count
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $result = & $Action
+        if ($Error.Count -gt $errCountBefore) {
+            $newCount = $Error.Count - $errCountBefore
+            for ($i = 0; $i -lt $newCount; $i++) {
+                Write-Log ("   (подавленная ошибка в {0}): {1}" -f $Name, $Error[$i].Exception.Message) 'WARN'
+            }
+        }
         Write-Log ("<- {0} [{1} мс]" -f $Name, $sw.ElapsedMilliseconds) 'TRACE'
         return $result
     } catch {
@@ -246,6 +256,18 @@ function Enable-Nat {
 
     $subnet = Get-SubnetPrefix -IP $Config.HostIP -Prefix $Config.Prefix
     $existingNat = Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }
+
+    # NAT с таким именем уже есть, но привязан к ДРУГОЙ подсети (например,
+    # HostIP поменяли в настройках после того, как NAT был создан под старый
+    # IP) — раздача выглядит "включённой", а трафик с ККМ реально никуда не
+    # транслируется. Пересоздаём под актуальную подсеть.
+    if ($existingNat -and $existingNat.InternalIPInterfaceAddressPrefix -ne $subnet) {
+        Write-Log ("NAT '{0}' существует на ДРУГОЙ подсети ({1} вместо {2}) — пересоздаю" -f `
+            $Config.NatName, $existingNat.InternalIPInterfaceAddressPrefix, $subnet) 'WARN'
+        Invoke-Logged "Remove-NetNat($($Config.NatName))" { Remove-NetNat -Name $Config.NatName -Confirm:$false } | Out-Null
+        $existingNat = $null
+    }
+
     if (-not $existingNat) {
         try {
             Write-Log ("-> New-NetNat($($Config.NatName), $subnet)") 'TRACE'
@@ -257,7 +279,7 @@ function Enable-Nat {
             Write-Log ("Не удалось создать NAT: {0}" -f $_.Exception.Message) 'ERROR'; return
         }
     } else {
-        Write-Log ("NAT '{0}' уже существует" -f $Config.NatName)
+        Write-Log ("NAT '{0}' уже существует на {1}" -f $Config.NatName, $subnet)
     }
     Write-Log 'Раздача интернета включена' 'OK'
 }
