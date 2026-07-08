@@ -48,5 +48,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ github.ref_name }}" RNDIS-NAT-Manager.exe \
+            --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes
