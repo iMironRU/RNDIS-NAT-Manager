@@ -70,7 +70,14 @@ function Invoke-Logged {
         if ($Error.Count -gt $errCountBefore) {
             $newCount = $Error.Count - $errCountBefore
             for ($i = 0; $i -lt $newCount; $i++) {
-                Write-Log ("   (подавленная ошибка в {0}): {1}" -f $Name, $Error[$i].Exception.Message) 'WARN'
+                $er = $Error[$i]
+                # "Get-X -Name Y" через CIM-командлеты (ScheduledTask, NetNat, NetAdapter...)
+                # штатно кидают в $Error "объекты не найдены", когда Y просто не существует —
+                # это не поломка, а нормальный путь для $null. Не шумим на это, шумим на всё
+                # остальное (например "Недопустимый класс" — это уже реальная проблема провайдера).
+                if ($er.FullyQualifiedErrorId -notmatch 'NotFound') {
+                    Write-Log ("   (подавленная ошибка в {0}): {1}" -f $Name, $er.Exception.Message) 'WARN'
+                }
             }
         }
         Write-Log ("<- {0} [{1} мс]" -f $Name, $sw.ElapsedMilliseconds) 'TRACE'
