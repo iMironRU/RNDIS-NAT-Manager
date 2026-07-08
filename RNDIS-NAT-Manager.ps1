@@ -49,6 +49,11 @@ function Write-Log {
     param([string]$Message, [string]$Type = 'INFO')
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Type] $Message"
     try { $line | Out-File -FilePath $LogPath -Append -Encoding UTF8 } catch {}
+    # Любой явный ERROR уже объясняет причину человеку — считаем $Error "разобранным"
+    # на этот момент, чтобы тот же сбой не всплыл ЕЩЁ РАЗ как безликий WARN от
+    # внешнего Invoke-Logged (например от обёртки "Меню[1] Enable-Nat" поверх ручного
+    # try/catch внутри Enable-Nat, который сам уже всё залогировал).
+    if ($Type -eq 'ERROR') { $script:LastReportedErrorCount = $Error.Count }
     if ($Type -eq 'TRACE' -and -not $script:TraceToConsole) { return }   # TRACE всегда в файле, в консоли — по флагу
     $color = switch ($Type) { 'OK' {'Green'} 'WARN' {'Yellow'} 'ERROR' {'Red'} 'TRACE' {'DarkGray'} default {'Gray'} }
     Write-Host $line -ForegroundColor $color
@@ -60,16 +65,22 @@ function Write-Log {
 # Также ловит НЕтерминирующие ошибки (-ErrorAction SilentlyContinue их не
 # выводит на экран, но они всё равно попадают в $Error) — иначе такие
 # ошибки видны в консоли как голая строка без метки времени и источника.
+$script:LastReportedErrorCount = 0   # общий "водяной знак" по $Error — см. комментарий ниже
+
 function Invoke-Logged {
     param([string]$Name, [scriptblock]$Action)
     Write-Log ("-> {0}" -f $Name) 'TRACE'
-    $errCountBefore = $Error.Count
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $result = & $Action
-        if ($Error.Count -gt $errCountBefore) {
-            $newCount = $Error.Count - $errCountBefore
-            for ($i = 0; $i -lt $newCount; $i++) {
+        # $Error общий на весь процесс и НЕ очищается — если считать "новые" ошибки
+        # от локального счётчика каждого вызова, вложенные Invoke-Logged (например
+        # Get-NetNat внутри Enable-Nat внутри Меню[1]) видят одни и те же ошибки
+        # и репортуют их по нескольку раз. Поэтому здесь общий script-scope счётчик:
+        # каждая ошибка репортуется РОВНО один раз, тем вызовом, который заметил её первым.
+        if ($Error.Count -gt $script:LastReportedErrorCount) {
+            $newCount = $Error.Count - $script:LastReportedErrorCount
+            for ($i = $newCount - 1; $i -ge 0; $i--) {
                 $er = $Error[$i]
                 # "Get-X -Name Y" через CIM-командлеты (ScheduledTask, NetNat, NetAdapter...)
                 # штатно кидают в $Error "объекты не найдены", когда Y просто не существует —
@@ -79,11 +90,13 @@ function Invoke-Logged {
                     Write-Log ("   (подавленная ошибка в {0}): {1}" -f $Name, $er.Exception.Message) 'WARN'
                 }
             }
+            $script:LastReportedErrorCount = $Error.Count
         }
         Write-Log ("<- {0} [{1} мс]" -f $Name, $sw.ElapsedMilliseconds) 'TRACE'
         return $result
     } catch {
         Write-Log ("x  {0} [{1} мс]: {2}" -f $Name, $sw.ElapsedMilliseconds, $_.Exception.Message) 'ERROR'
+        $script:LastReportedErrorCount = $Error.Count
         return $null
     }
 }
@@ -281,10 +294,18 @@ function Enable-Nat {
         Invoke-Logged 'Remove-NetIPAddress(старые)' {
             $existingIPs | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
         } | Out-Null
-        Invoke-Logged "New-NetIPAddress($($Config.HostIP)/$($Config.Prefix))" {
-            New-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress $Config.HostIP -PrefixLength $Config.Prefix
-        } | Out-Null
-        Write-Log ("Назначен IP {0}/{1}" -f $Config.HostIP, $Config.Prefix) 'OK'
+        try {
+            Write-Log ("-> New-NetIPAddress($($Config.HostIP)/$($Config.Prefix))") 'TRACE'
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            # -ErrorAction Stop обязателен: без него ошибка командлета не термирующая,
+            # try/catch её не ловит, выполнение проваливается дальше, и следующая
+            # строка молча соврёт "Назначен IP... OK", хотя IP не назначен.
+            New-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress $Config.HostIP -PrefixLength $Config.Prefix -ErrorAction Stop | Out-Null
+            Write-Log ("<- New-NetIPAddress [{0} мс]" -f $sw.ElapsedMilliseconds) 'TRACE'
+            Write-Log ("Назначен IP {0}/{1}" -f $Config.HostIP, $Config.Prefix) 'OK'
+        } catch {
+            Write-Log ("Не удалось назначить IP: {0}" -f $_.Exception.Message) 'ERROR'; return
+        }
     } else {
         Write-Log ("IP {0} уже на адаптере" -f $Config.HostIP)
     }
@@ -307,11 +328,20 @@ function Enable-Nat {
         try {
             Write-Log ("-> New-NetNat($($Config.NatName), $subnet)") 'TRACE'
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            New-NetNat -Name $Config.NatName -InternalIPInterfaceAddressPrefix $subnet | Out-Null
+            # -ErrorAction Stop обязателен: New-NetNat на некоторых машинах кидает
+            # "Недопустимый класс" как НЕтерминирующую ошибку (провайдер WMI для
+            # MSFT_NetNat сломан/не зарегистрирован) — без Stop try/catch её не
+            # видит, выполнение проваливается дальше, и лог врёт "Создан NAT... OK",
+            # хотя NAT не создан.
+            New-NetNat -Name $Config.NatName -InternalIPInterfaceAddressPrefix $subnet -ErrorAction Stop | Out-Null
             Write-Log ("<- New-NetNat [{0} мс]" -f $sw.ElapsedMilliseconds) 'TRACE'
             Write-Log ("Создан NAT '{0}' на {1}" -f $Config.NatName, $subnet) 'OK'
         } catch {
-            Write-Log ("Не удалось создать NAT: {0}" -f $_.Exception.Message) 'ERROR'; return
+            Write-Log ("Не удалось создать NAT: {0}" -f $_.Exception.Message) 'ERROR'
+            if ($_.Exception.Message -match 'класс|class') {
+                Write-Log 'Похоже на сломанный провайдер WMI для NetNat (ROOT\StandardCimv2\MSFT_NetNat). Проверь: Get-CimClass -Namespace root/StandardCimv2 -ClassName MSFT_NetNat. Временный обход — классический ICS, пункт [8].' 'WARN'
+            }
+            return
         }
     } else {
         Write-Log ("NAT '{0}' уже существует на {1}" -f $Config.NatName, $subnet)
@@ -322,8 +352,12 @@ function Enable-Nat {
 function Disable-Nat {
     Write-Log '=== Disable-Nat: старт ===' 'TRACE'
     if (Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }) {
-        Invoke-Logged "Remove-NetNat($($Config.NatName))" { Remove-NetNat -Name $Config.NatName -Confirm:$false } | Out-Null
-        Write-Log ("NAT '{0}' удалён" -f $Config.NatName) 'OK'
+        try {
+            Remove-NetNat -Name $Config.NatName -Confirm:$false -ErrorAction Stop
+            Write-Log ("NAT '{0}' удалён" -f $Config.NatName) 'OK'
+        } catch {
+            Write-Log ("Не удалось удалить NAT: {0}" -f $_.Exception.Message) 'ERROR'
+        }
     } else {
         Write-Log ("NAT '{0}' не найден" -f $Config.NatName) 'WARN'
     }
@@ -379,20 +413,24 @@ function Install-Task {
     $trigger   = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-    Invoke-Logged "Register-ScheduledTask($($Config.TaskName))" {
+    try {
         Register-ScheduledTask -TaskName $Config.TaskName -Action $action -Trigger $trigger `
-            -Principal $principal -Settings $settings -Force
-    } | Out-Null
-    Write-Log ("Задача автозапуска '{0}' установлена" -f $Config.TaskName) 'OK'
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Write-Log ("Задача автозапуска '{0}' установлена" -f $Config.TaskName) 'OK'
+    } catch {
+        Write-Log ("Не удалось установить автозапуск: {0}" -f $_.Exception.Message) 'ERROR'
+    }
 }
 
 function Remove-Task {
     Write-Log '=== Remove-Task: старт ===' 'TRACE'
     if (Invoke-Logged "Get-ScheduledTask($($Config.TaskName))" { Get-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue }) {
-        Invoke-Logged "Unregister-ScheduledTask($($Config.TaskName))" {
-            Unregister-ScheduledTask -TaskName $Config.TaskName -Confirm:$false
-        } | Out-Null
-        Write-Log 'Задача автозапуска удалена' 'OK'
+        try {
+            Unregister-ScheduledTask -TaskName $Config.TaskName -Confirm:$false -ErrorAction Stop
+            Write-Log 'Задача автозапуска удалена' 'OK'
+        } catch {
+            Write-Log ("Не удалось удалить автозапуск: {0}" -f $_.Exception.Message) 'ERROR'
+        }
     } else {
         Write-Log 'Задача автозапуска не найдена' 'WARN'
     }
