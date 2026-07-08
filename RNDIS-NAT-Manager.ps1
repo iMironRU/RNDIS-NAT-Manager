@@ -137,6 +137,7 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $ConfigPath = Join-Path $AppDir 'config.json'
 
 $DefaultConfig = [ordered]@{
+    Mode         = 'WinNAT'   # 'WinNAT' | 'ICS' — какой механизм раздачи считается основным на этой машине
     NatName      = 'RndisNat'
     HostIP       = '192.168.137.1'
     Prefix       = 24
@@ -169,7 +170,7 @@ function Save-Config {
 }
 
 $script:Config = Load-Config
-Write-Log ("Конфиг: NatName=$($Config.NatName) HostIP=$($Config.HostIP)/$($Config.Prefix) KkmIP=$($Config.KkmIP) AdapterMatch='$($Config.AdapterMatch)' TaskName='$($Config.TaskName)'") 'TRACE'
+Write-Log ("Конфиг: Mode=$($Config.Mode) NatName=$($Config.NatName) HostIP=$($Config.HostIP)/$($Config.Prefix) KkmIP=$($Config.KkmIP) AdapterMatch='$($Config.AdapterMatch)' TaskName='$($Config.TaskName)'") 'TRACE'
 
 # Подсеть выводится из IP хоста и префикса — чтобы не было рассинхрона
 function Get-SubnetPrefix {
@@ -225,6 +226,9 @@ function Show-Status {
     Write-Host '── Состояние ──────────────────────────────────' -ForegroundColor Cyan
     Write-Log 'Show-Status: старт' 'TRACE'
 
+    $isIcs = ($Config.Mode -eq 'ICS')
+    Write-Host ("Режим         : {0}   (сменить — [M])" -f $(if ($isIcs) { 'Классический ICS' } else { 'WinNAT' })) -ForegroundColor Magenta
+
     $a = Get-RndisAdapter
     $ipOk = $false
     if ($a) {
@@ -243,41 +247,57 @@ function Show-Status {
         Write-Host 'RNDIS-адаптер : НЕ НАЙДЕН (проверь USB / выбери вручную [5])' -ForegroundColor Red
     }
 
-    $subnet = Get-SubnetPrefix -IP $Config.HostIP -Prefix $Config.Prefix
-    $nat = Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }
-    $natOk = $false
-    if ($nat) {
-        $natOk = ($nat.InternalIPInterfaceAddressPrefix -eq $subnet)
-        Write-Host ("NAT '{0}'  : активен на {1}{2}" -f $Config.NatName, $nat.InternalIPInterfaceAddressPrefix, $(if (-not $natOk) { " (ожидается $subnet !)" } else { '' })) `
-            -ForegroundColor $(if ($natOk) { 'Green' } else { 'Yellow' })
+    # Показываем механизм, который сейчас АКТИВЕН по режиму, ярко; второй —
+    # тоже показываем (полезно при переключении/сравнении), но приглушённо,
+    # и вердикт ниже считаем только по активному, чтобы не путать два "включен".
+    $mechOk = $false
+    if ($isIcs) {
+        $icsStatus = Get-IcsStatus
+        $mechOk = [bool]($icsStatus -and $icsStatus.Enabled)
+        if ($mechOk) {
+            Write-Host ("ICS           : включён ({0} подключ.)" -f $icsStatus.Connections.Count) -ForegroundColor Green
+        } else {
+            Write-Host 'ICS           : выключен / не настроен вручную в Windows' -ForegroundColor Yellow
+        }
     } else {
-        Write-Host ("NAT '{0}'  : не создан" -f $Config.NatName) -ForegroundColor Yellow
+        $subnet = Get-SubnetPrefix -IP $Config.HostIP -Prefix $Config.Prefix
+        $nat = Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }
+        if ($nat) {
+            $mechOk = ($nat.InternalIPInterfaceAddressPrefix -eq $subnet)
+            Write-Host ("NAT '{0}'  : активен на {1}{2}" -f $Config.NatName, $nat.InternalIPInterfaceAddressPrefix, $(if (-not $mechOk) { " (ожидается $subnet !)" } else { '' })) `
+                -ForegroundColor $(if ($mechOk) { 'Green' } else { 'Yellow' })
+        } else {
+            Write-Host ("NAT '{0}'  : не создан" -f $Config.NatName) -ForegroundColor Yellow
+        }
     }
 
     $task = Invoke-Logged "Get-ScheduledTask($($Config.TaskName))" { Get-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue }
-    Write-Host ("Автозапуск    : {0}" -f $(if ($task) { 'установлен' } else { 'нет' })) -ForegroundColor $(if ($task) { 'Green' } else { 'Yellow' })
+    Write-Host ("Автозапуск    : {0}" -f $(if ($task) { "установлен ($(if ($isIcs) {'ICS'} else {'WinNAT'}))" } else { 'нет' })) -ForegroundColor $(if ($task) { 'Green' } else { 'Yellow' })
     Write-Host ("Шлюз / ККМ    : {0}  ->  {1}" -f $Config.HostIP, $Config.KkmIP)
     Write-Host '────────────────────────────────────────────────' -ForegroundColor Cyan
 
     # Явный вердикт вместо набора разрозненных фактов — чтобы не приходилось
-    # самому складывать "адаптер зелёный + IP зелёный + NAT жёлтый" в ответ
+    # самому складывать "адаптер зелёный + IP зелёный + механизм жёлтый" в ответ
     # на вопрос "оно вообще работает?".
-    $workingNow = [bool]($a -and $a.Status -eq 'Up' -and $ipOk -and $natOk)
+    $workingNow = [bool]($a -and $a.Status -eq 'Up' -and $ipOk -and $mechOk)
     if ($workingNow -and $task) {
         Write-Host '  ✓ РАЗДАЧА РАБОТАЕТ и настроена пережить перезагрузку' -ForegroundColor Green
     } elseif ($workingNow -and -not $task) {
         Write-Host '  ⚠ РАБОТАЕТ СЕЙЧАС, но НЕ переживёт перезагрузку — поставь автозапуск [6]' -ForegroundColor Yellow
     } else {
         $reasons = @()
-        if (-not $a)                       { $reasons += 'адаптер не найден' }
-        elseif ($a.Status -ne 'Up')        { $reasons += "адаптер не поднят (статус $($a.Status))" }
-        if ($a -and -not $ipOk)            { $reasons += 'нет нужного IP на адаптере' }
-        if (-not $natOk)                   { $reasons += 'NAT не создан или на другой подсети' }
-        Write-Host ("  ✗ ЕСТЬ ПРОБЛЕМА: {0} — жми [1], затем [H]" -f ($reasons -join '; ')) -ForegroundColor Red
+        if (-not $a)                { $reasons += 'адаптер не найден' }
+        elseif ($a.Status -ne 'Up') { $reasons += "адаптер не поднят (статус $($a.Status))" }
+        if ($a -and -not $ipOk)     { $reasons += 'нет нужного IP на адаптере' }
+        if (-not $mechOk) {
+            $reasons += if ($isIcs) { 'ICS выключен — включи вручную в Windows (Свойства адаптера -> Доступ), затем [8] при зависании' }
+                                     else { 'NAT не создан или на другой подсети — жми [1], затем [H]' }
+        }
+        Write-Host ("  ✗ ЕСТЬ ПРОБЛЕМА: {0}" -f ($reasons -join '; ')) -ForegroundColor Red
     }
     Write-Host '  (это проверка настройки; факт интернета на кассе смотри через [4])' -ForegroundColor DarkGray
     Write-Host '────────────────────────────────────────────────' -ForegroundColor Cyan
-    Write-Log ("Show-Status: конец, workingNow=$workingNow autostart=$([bool]$task)") 'TRACE'
+    Write-Log ("Show-Status: конец, mode=$($Config.Mode) workingNow=$workingNow autostart=$([bool]$task)") 'TRACE'
 }
 
 function Enable-Nat {
@@ -436,27 +456,36 @@ function Remove-Task {
     }
 }
 
-function Reset-ICS {
-    Write-Log '=== Сброс классического ICS ==='
-    try {
-        Write-Log '-> New-Object HNetCfg.HNetShare' 'TRACE'
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $share = New-Object -ComObject HNetCfg.HNetShare
-        Write-Log ("<- New-Object HNetCfg.HNetShare [{0} мс]" -f $sw.ElapsedMilliseconds) 'TRACE'
-        $saved = @()
-        foreach ($conn in $share.EnumEveryConnection) {
-            $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+# Общий вход в HNetCfg.HNetShare — используется и Reset-ICS, и статусом/диагностикой,
+# чтобы не дублировать COM-перечисление в трёх местах.
+function Get-IcsStatus {
+    Invoke-Logged 'HNetCfg.HNetShare(статус ICS)' {
+        $sh = New-Object -ComObject HNetCfg.HNetShare
+        $active = @()
+        foreach ($c in $sh.EnumEveryConnection) {
+            $cfg = $sh.INetSharingConfigurationForINetConnection($c)
             if ($cfg.SharingEnabled) {
-                $type = $cfg.SharingConnectionType
-                $saved += [pscustomobject]@{ Cfg = $cfg; Type = $type }
-                $cfg.DisableSharing()
-                Write-Log ("Отключён общий доступ (type={0})" -f $type)
+                $active += [pscustomobject]@{ Cfg = $cfg; Type = $cfg.SharingConnectionType }
             }
         }
-        Write-Log ("<- EnumEveryConnection [{0} мс], найдено активных: {1}" -f $sw.ElapsedMilliseconds, $saved.Count) 'TRACE'
-        if ($saved.Count -eq 0) { Write-Log 'Активных ICS-подключений нет' 'WARN'; return }
+        [pscustomobject]@{ Enabled = ($active.Count -gt 0); Connections = $active }
+    }
+}
+
+function Reset-ICS {
+    Write-Log '=== Сброс классического ICS ==='
+    $status = Get-IcsStatus
+    if (-not $status -or -not $status.Enabled) {
+        Write-Log 'Активных ICS-подключений нет — включи вручную через Windows (Свойства адаптера -> Доступ), затем [8] для сброса при зависании' 'WARN'
+        return
+    }
+    try {
+        foreach ($s in $status.Connections) {
+            $s.Cfg.DisableSharing()
+            Write-Log ("Отключён общий доступ (type={0})" -f $s.Type)
+        }
         Start-Sleep -Seconds 1
-        foreach ($s in ($saved | Sort-Object Type)) {   # сначала Public (0), потом Private (1)
+        foreach ($s in ($status.Connections | Sort-Object Type)) {   # сначала Public (0), потом Private (1)
             $s.Cfg.EnableSharing($s.Type)
             Write-Log ("Восстановлен общий доступ (type={0})" -f $s.Type) 'OK'
         }
@@ -576,26 +605,31 @@ function Test-Diag {
         }
     }
 
-    # NAT
+    # NAT (WinNAT) — если основной режим ICS, это просто справочная строка, не проблема
     $nat = Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }
-    Add-Row 'NAT создан' ($null -ne $nat) `
-        $(if ($nat) { $nat.InternalIPInterfaceAddressPrefix } else { 'нет' }) 'E'
+    if ($Config.Mode -eq 'WinNAT') {
+        Add-Row 'NAT создан' ($null -ne $nat) `
+            $(if ($nat) { $nat.InternalIPInterfaceAddressPrefix } else { 'нет' }) 'E'
+    } else {
+        Add-Row 'NAT (WinNAT, для справки)' ($null -ne $nat) `
+            $(if ($nat) { $nat.InternalIPInterfaceAddressPrefix } else { 'нет — и не нужен в режиме ICS' }) $null
+    }
 
     # Автозапуск
     $task = Invoke-Logged "Get-ScheduledTask($($Config.TaskName))" { Get-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue }
     Add-Row 'Задача автозапуска' ($null -ne $task) $(if ($task) { 'есть' } else { 'нет' }) 'T'
 
-    # Конфликт с ICS
-    $icsOn = Invoke-Logged 'HNetCfg.HNetShare(проверка ICS)' {
-        $on = $false
-        $sh = New-Object -ComObject HNetCfg.HNetShare
-        foreach ($c in $sh.EnumEveryConnection) {
-            if ($sh.INetSharingConfigurationForINetConnection($c).SharingEnabled) { $on = $true }
-        }
-        $on
+    # ICS — смысл строки зависит от режима: в режиме ICS это то, что должно быть
+    # включено (E), в режиме WinNAT — то, чего быть не должно (I, конфликт)
+    $icsStatus = Get-IcsStatus
+    $icsOn = [bool]($icsStatus -and $icsStatus.Enabled)
+    if ($Config.Mode -eq 'ICS') {
+        Add-Row 'ICS включён' $icsOn `
+            $(if ($icsOn) { "$($icsStatus.Connections.Count) подключ." } else { 'нет — включи вручную в Windows' }) 'E'
+    } else {
+        Add-Row 'Нет конфликта с ICS' (-not $icsOn) `
+            $(if ($icsOn) { 'ICS ВКЛЮЧЁН — конфликтует с WinNAT' } else { 'чисто' }) 'I'
     }
-    Add-Row 'Нет конфликта с ICS' (-not $icsOn) `
-        $(if ($icsOn) { 'ICS ВКЛЮЧЁН — конфликтует с WinNAT' } else { 'чисто' }) 'I'
 
     # Интернет на хосте и связь с ККМ
     $inet = Invoke-Logged 'Test-Connection(1.1.1.1)' { Test-Connection 1.1.1.1 -Count 2 -Quiet -ErrorAction SilentlyContinue }
@@ -605,8 +639,11 @@ function Test-Diag {
 
     Write-Host '────────────────────────────────────────────────' -ForegroundColor Cyan
     if ($script:DiagHints -contains 'H') { Write-Host '  -> Запусти [H] — устранить причины отвалов.' -ForegroundColor Yellow }
-    if ($script:DiagHints -contains 'E') { Write-Host '  -> Запусти [1] — включить раздачу.' -ForegroundColor Yellow }
-    if ($script:DiagHints -contains 'I') { Write-Host '  -> Отключи ICS: пункт [8].' -ForegroundColor Yellow }
+    if ($script:DiagHints -contains 'E') {
+        if ($Config.Mode -eq 'ICS') { Write-Host '  -> Включи ICS вручную в Windows (Свойства адаптера -> Доступ), затем [8] при зависании.' -ForegroundColor Yellow }
+        else                        { Write-Host '  -> Запусти [1] — включить раздачу.' -ForegroundColor Yellow }
+    }
+    if ($script:DiagHints -contains 'I') { Write-Host '  -> Отключи ICS: пункт [8]. Либо это осознанный выбор — смени режим на ICS: [M].' -ForegroundColor Yellow }
     if ($script:DiagHints -contains 'T') { Write-Host '  -> Поставь автозапуск: пункт [6].' -ForegroundColor Yellow }
     if ($script:DiagHints.Count -eq 0)   { Write-Host '  Всё в порядке.' -ForegroundColor Green }
     Write-Log '=== Test-Diag: конец ===' 'TRACE'
@@ -682,8 +719,9 @@ function Invoke-Harden {
         Write-Log 'RNDIS-адаптер не найден — питание/forwarding пропущены' 'WARN'
     }
 
-    # 5. Заново поднять IP + NAT (после сброса адаптера IP слетает)
-    Enable-Nat
+    # 5. Заново поднять раздачу (после сброса адаптера IP/сессия слетает) — тем
+    # механизмом, что выбран в [M], а не всегда WinNAT.
+    if ($Config.Mode -eq 'ICS') { Reset-ICS } else { Enable-Nat }
 
     Write-Log 'Харденинг завершён. Fast Startup и USB suspend вступят в силу после перезагрузки.' 'OK'
 }
@@ -692,8 +730,13 @@ function Invoke-Harden {
 
 #region ── Тихий режим (автозапуск) ───────────────────────────────────
 if ($Auto) {
-    Write-Log '=== Автозапуск: настройка NAT ===' 'INFO'
-    Invoke-Logged 'Enable-Nat(авто)' { Enable-Nat } | Out-Null
+    if ($Config.Mode -eq 'ICS') {
+        Write-Log '=== Автозапуск: проверка/сброс классического ICS ===' 'INFO'
+        Invoke-Logged 'Reset-ICS(авто)' { Reset-ICS } | Out-Null
+    } else {
+        Write-Log '=== Автозапуск: настройка WinNAT ===' 'INFO'
+        Invoke-Logged 'Enable-Nat(авто)' { Enable-Nat } | Out-Null
+    }
     Write-Log '=== Автозапуск: завершение ===' 'INFO'
     exit 0
 }
@@ -707,18 +750,24 @@ function Show-Menu {
     Write-Host '╚════════════════════════════════════════════════╝' -ForegroundColor Cyan
     Show-Status
     Write-Host ''
-    Write-Host '  [1] Включить раздачу (NAT)'
-    Write-Host '  [2] Выключить раздачу (NAT)'
-    Write-Host '  [3] Сбросить / перезапустить раздачу'
+    # Пункты активного по [M] режима — обычным цветом, пункты неактивного — приглушённо,
+    # чтобы не жать [1] по инерции, пока реально используется ICS, и наоборот.
+    $isIcs    = ($Config.Mode -eq 'ICS')
+    $natColor = if ($isIcs) { 'DarkGray' } else { 'White' }
+    $icsColor = if ($isIcs) { 'White' }    else { 'DarkGray' }
+    Write-Host '  [1] Включить раздачу (WinNAT)'            -ForegroundColor $natColor
+    Write-Host '  [2] Выключить раздачу (WinNAT)'           -ForegroundColor $natColor
+    Write-Host '  [3] Сбросить / перезапустить (WinNAT)'    -ForegroundColor $natColor
     Write-Host '  [4] Проверить связь с ККМ (ping)'
     Write-Host '  [5] Выбрать сетевой адаптер вручную'
     Write-Host '  [6] Установить автозапуск при загрузке'
     Write-Host '  [7] Убрать автозапуск'
-    Write-Host '  [8] Сбросить классический ICS (старый способ)' -ForegroundColor DarkGray
+    Write-Host '  [8] Сбросить / включить классический ICS' -ForegroundColor $icsColor
     Write-Host '  [9] Показать лог'
     Write-Host '  [D] Диагностика подключений' -ForegroundColor Cyan
     Write-Host '  [H] Устранить причины отвалов (разово)' -ForegroundColor Cyan
     Write-Host ("  [V] Подробный лог в консоли: {0}" -f $(if ($script:TraceToConsole) { 'ВКЛ' } else { 'выкл' })) -ForegroundColor DarkGray
+    Write-Host ("  [M] Режим: {0} (сменить на {1})" -f $(if ($isIcs) { 'ICS' } else { 'WinNAT' }), $(if ($isIcs) { 'WinNAT' } else { 'ICS' })) -ForegroundColor Magenta
     Write-Host '  [C] Настройки'
     Write-Host '  [0] Выход'
     Write-Host ''
@@ -744,6 +793,11 @@ do {
         'V' {
             $script:TraceToConsole = -not $script:TraceToConsole
             Write-Log ("Подробный лог в консоли: {0}" -f $(if ($script:TraceToConsole) { 'включён' } else { 'выключен' })) 'INFO'
+        }
+        'M' {
+            $script:Config.Mode = if ($Config.Mode -eq 'ICS') { 'WinNAT' } else { 'ICS' }
+            Save-Config
+            Write-Log ("Режим переключён на: {0}" -f $Config.Mode) 'OK'
         }
         '0' { Write-Host 'Выход.' -ForegroundColor Cyan }
         default { Write-Host 'Неверный выбор' -ForegroundColor Yellow }
