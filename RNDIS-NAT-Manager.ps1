@@ -206,30 +206,58 @@ function Show-Status {
     Write-Log 'Show-Status: старт' 'TRACE'
 
     $a = Get-RndisAdapter
+    $ipOk = $false
     if ($a) {
         Write-Host ("RNDIS-адаптер : {0}  [{1}]" -f $a.Name, $a.InterfaceDescription) -ForegroundColor Green
         Write-Host ("  Статус      : {0}" -f $a.Status)
         $ips = Invoke-Logged "Get-NetIPAddress(ifIndex=$($a.ifIndex))" {
             Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
         }
-        if ($ips) { $ips | ForEach-Object { Write-Host ("  IP          : {0}/{1}" -f $_.IPAddress, $_.PrefixLength) } }
-        else      { Write-Host '  IP          : не назначен' -ForegroundColor Yellow }
+        if ($ips) {
+            $ips | ForEach-Object { Write-Host ("  IP          : {0}/{1}" -f $_.IPAddress, $_.PrefixLength) }
+            $ipOk = [bool]($ips | Where-Object IPAddress -eq $Config.HostIP)
+        } else {
+            Write-Host '  IP          : не назначен' -ForegroundColor Yellow
+        }
     } else {
         Write-Host 'RNDIS-адаптер : НЕ НАЙДЕН (проверь USB / выбери вручную [5])' -ForegroundColor Red
     }
 
+    $subnet = Get-SubnetPrefix -IP $Config.HostIP -Prefix $Config.Prefix
     $nat = Invoke-Logged "Get-NetNat($($Config.NatName))" { Get-NetNat -Name $Config.NatName -ErrorAction SilentlyContinue }
+    $natOk = $false
     if ($nat) {
-        Write-Host ("NAT '{0}'  : активен на {1}" -f $Config.NatName, $nat.InternalIPInterfaceAddressPrefix) -ForegroundColor Green
+        $natOk = ($nat.InternalIPInterfaceAddressPrefix -eq $subnet)
+        Write-Host ("NAT '{0}'  : активен на {1}{2}" -f $Config.NatName, $nat.InternalIPInterfaceAddressPrefix, $(if (-not $natOk) { " (ожидается $subnet !)" } else { '' })) `
+            -ForegroundColor $(if ($natOk) { 'Green' } else { 'Yellow' })
     } else {
         Write-Host ("NAT '{0}'  : не создан" -f $Config.NatName) -ForegroundColor Yellow
     }
 
     $task = Invoke-Logged "Get-ScheduledTask($($Config.TaskName))" { Get-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue }
-    Write-Host ("Автозапуск    : {0}" -f $(if ($task) { 'установлен' } else { 'нет' }))
+    Write-Host ("Автозапуск    : {0}" -f $(if ($task) { 'установлен' } else { 'нет' })) -ForegroundColor $(if ($task) { 'Green' } else { 'Yellow' })
     Write-Host ("Шлюз / ККМ    : {0}  ->  {1}" -f $Config.HostIP, $Config.KkmIP)
     Write-Host '────────────────────────────────────────────────' -ForegroundColor Cyan
-    Write-Log 'Show-Status: конец' 'TRACE'
+
+    # Явный вердикт вместо набора разрозненных фактов — чтобы не приходилось
+    # самому складывать "адаптер зелёный + IP зелёный + NAT жёлтый" в ответ
+    # на вопрос "оно вообще работает?".
+    $workingNow = [bool]($a -and $a.Status -eq 'Up' -and $ipOk -and $natOk)
+    if ($workingNow -and $task) {
+        Write-Host '  ✓ РАЗДАЧА РАБОТАЕТ и настроена пережить перезагрузку' -ForegroundColor Green
+    } elseif ($workingNow -and -not $task) {
+        Write-Host '  ⚠ РАБОТАЕТ СЕЙЧАС, но НЕ переживёт перезагрузку — поставь автозапуск [6]' -ForegroundColor Yellow
+    } else {
+        $reasons = @()
+        if (-not $a)                       { $reasons += 'адаптер не найден' }
+        elseif ($a.Status -ne 'Up')        { $reasons += "адаптер не поднят (статус $($a.Status))" }
+        if ($a -and -not $ipOk)            { $reasons += 'нет нужного IP на адаптере' }
+        if (-not $natOk)                   { $reasons += 'NAT не создан или на другой подсети' }
+        Write-Host ("  ✗ ЕСТЬ ПРОБЛЕМА: {0} — жми [1], затем [H]" -f ($reasons -join '; ')) -ForegroundColor Red
+    }
+    Write-Host '  (это проверка настройки; факт интернета на кассе смотри через [4])' -ForegroundColor DarkGray
+    Write-Host '────────────────────────────────────────────────' -ForegroundColor Cyan
+    Write-Log ("Show-Status: конец, workingNow=$workingNow autostart=$([bool]$task)") 'TRACE'
 }
 
 function Enable-Nat {
