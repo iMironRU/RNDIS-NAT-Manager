@@ -1,6 +1,23 @@
 # RNDIS-NAT-Manager
 
+[![build](https://img.shields.io/github/actions/workflow/status/iMironRU/RNDIS-NAT-Manager/build.yml?branch=main&label=build&style=flat-square)](https://github.com/iMironRU/RNDIS-NAT-Manager/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/iMironRU/RNDIS-NAT-Manager?style=flat-square&label=release)](https://github.com/iMironRU/RNDIS-NAT-Manager/releases/latest)
+[![license](https://img.shields.io/github/license/iMironRU/RNDIS-NAT-Manager?style=flat-square)](LICENSE)
+
+**[→ Сайт проекта](https://imironru.github.io/RNDIS-NAT-Manager/)** · **[→ Скачать последний релиз](https://github.com/iMironRU/RNDIS-NAT-Manager/releases/latest)**
+
 Менеджер раздачи интернета (NAT) для кассовых аппаратов (ККМ), подключённых к хосту по RNDIS (USB). Решает основную проблему классического ICS: общий доступ к интернету слетает после перезагрузки хоста, даже если чекбокс «Разрешить общий доступ» в свойствах адаптера визуально остаётся включённым.
+
+## Содержание
+
+- [Проблема](#проблема)
+- [Решение](#решение)
+- [Режим: WinNAT или ICS](#режим-winnat-или-ics)
+- [Меню](#меню)
+- [Настройка на кассе (ККМ)](#настройка-на-кассе-ккм)
+- [Установка](#установка)
+- [Сборка из исходников](#сборка-из-исходников)
+- [Требования](#требования)
 
 ## Проблема
 

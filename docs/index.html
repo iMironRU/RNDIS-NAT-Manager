@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RNDIS-NAT-Manager — раздача интернета для ККМ, которая переживает перезагрузку</title>
+<meta name="description" content="ICS / NAT менеджер для RNDIS-подключённых кассовых аппаратов. Решает проблему отвала общего доступа к интернету после перезагрузки хоста.">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --bg-alt: #11161d;
+    --bg-card: #131920;
+    --border: #232b36;
+    --text: #c9d4e0;
+    --text-dim: #6b7889;
+    --text-bright: #eef2f6;
+    --cyan: #5ad4e6;
+    --green: #3fd67a;
+    --yellow: #e0b341;
+    --red: #f0665e;
+    --magenta: #d97ad4;
+    --accent: #5ad4e6;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.65;
+    font-size: 16px;
+  }
+  .mono {
+    font-family: "SF Mono", "Cascadia Code", "Consolas", "Courier New", monospace;
+  }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3 { color: var(--text-bright); line-height: 1.25; margin: 0 0 .5em; }
+  h2 { font-size: 1.7rem; margin-top: 0; }
+  p { margin: 0 0 1em; color: var(--text); }
+  section { padding: 64px 0; border-top: 1px solid var(--border); }
+  section:first-of-type { border-top: none; }
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-size: .78rem;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  /* ---------- Hero ---------- */
+  header.hero {
+    padding: 96px 24px 72px;
+    text-align: center;
+    background:
+      radial-gradient(ellipse 700px 400px at 50% -10%, rgba(90,212,230,.10), transparent 65%),
+      radial-gradient(ellipse 500px 300px at 85% 10%, rgba(217,122,212,.06), transparent 60%);
+  }
+  header.hero .badge-row { margin-bottom: 28px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  header.hero .badge-row img { height: 20px; display: block; }
+  header.hero h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    margin-bottom: 14px;
+    letter-spacing: -.02em;
+  }
+  header.hero h1 .accent { color: var(--cyan); }
+  header.hero .tagline {
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    max-width: 620px;
+    margin: 0 auto 36px;
+  }
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 24px;
+    border-radius: var(--radius);
+    font-weight: 600;
+    font-size: .95rem;
+    border: 1px solid transparent;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+  .btn-primary { background: var(--cyan); color: #04141a; }
+  .btn-primary:hover { background: #78e0ee; }
+  .btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--text-dim); }
+
+  /* ---------- Terminal mockup ---------- */
+  .terminal {
+    background: #05070a;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px -20px rgba(0,0,0,.6);
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .terminal .titlebar {
+    background: #0f1319;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .terminal .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .terminal .dot.r { background: #ff5f57; }
+  .terminal .dot.y { background: #febc2e; }
+  .terminal .dot.g { background: #28c840; }
+  .terminal .titlebar .fname { margin-left: 8px; font-size: .78rem; color: var(--text-dim); }
+  .terminal pre {
+    margin: 0;
+    padding: 20px 22px;
+    font-size: .82rem;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .t-cyan { color: var(--cyan); }
+  .t-green { color: var(--green); }
+  .t-yellow { color: var(--yellow); }
+  .t-red { color: var(--red); }
+  .t-magenta { color: var(--magenta); }
+  .t-dim { color: var(--text-dim); }
+  .t-white { color: var(--text-bright); }
+
+  /* ---------- Problem / solution ---------- */
+  .ps-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px; }
+  @media (max-width: 700px) { .ps-grid { grid-template-columns: 1fr; } }
+  .ps-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .ps-card h3 { font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+  .ps-card.problem h3::before { content: "✗"; color: var(--red); }
+  .ps-card.solution h3::before { content: "✓"; color: var(--green); }
+  .ps-card p:last-child { margin-bottom: 0; }
+  .ps-card ul { margin: 0; padding-left: 1.2em; color: var(--text-dim); font-size: .93rem; }
+  .ps-card ul li { margin-bottom: 6px; }
+
+  /* ---------- Modes ---------- */
+  .modes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 32px; }
+  @media (max-width: 700px) { .modes-grid { grid-template-columns: 1fr; } }
+  .mode-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .mode-card .mode-tag {
+    display: inline-block;
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-bottom: 14px;
+  }
+  .mode-card.winnat .mode-tag { background: rgba(90,212,230,.12); color: var(--cyan); }
+  .mode-card.ics .mode-tag { background: rgba(217,122,212,.12); color: var(--magenta); }
+  .mode-card p { font-size: .93rem; color: var(--text-dim); }
+  .mode-card code { color: var(--text-bright); }
+
+  /* ---------- Menu table ---------- */
+  table.menu-ref { width: 100%; border-collapse: collapse; margin-top: 28px; font-size: .92rem; }
+  table.menu-ref th, table.menu-ref td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  table.menu-ref th { color: var(--text-dim); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+  table.menu-ref td:first-child { font-family: "SF Mono", Consolas, monospace; color: var(--cyan); white-space: nowrap; }
+  table.menu-ref tr:last-child td { border-bottom: none; }
+
+  /* ---------- Install steps ---------- */
+  ol.steps { counter-reset: step; list-style: none; padding: 0; margin: 32px 0 0; }
+  ol.steps li {
+    counter-increment: step;
+    position: relative;
+    padding: 4px 0 20px 44px;
+    color: var(--text-dim);
+    font-size: .95rem;
+  }
+  ol.steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--cyan);
+    font-weight: 700;
+    font-size: .85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  ol.steps li strong { color: var(--text-bright); }
+  ol.steps li code {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: .88em;
+    color: var(--text-bright);
+  }
+
+  footer {
+    padding: 40px 24px 60px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: .85rem;
+  }
+  footer a { color: var(--text-dim); }
+  footer .sep { margin: 0 8px; opacity: .4; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="badge-row">
+    <img src="https://img.shields.io/github/actions/workflow/status/iMironRU/RNDIS-NAT-Manager/build.yml?branch=main&label=build&style=flat-square&color=3fd67a" alt="build status">
+    <img src="https://img.shields.io/github/v/release/iMironRU/RNDIS-NAT-Manager?style=flat-square&color=5ad4e6&label=release" alt="latest release">
+    <img src="https://img.shields.io/github/license/iMironRU/RNDIS-NAT-Manager?style=flat-square&color=8b949e" alt="license">
+  </div>
+  <h1>RNDIS<span class="accent">-NAT-</span>Manager</h1>
+  <p class="tagline">Раздача интернета для кассовых аппаратов по RNDIS (USB), которая не отваливается после перезагрузки хоста — в отличие от штатного общего доступа Windows.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/iMironRU/RNDIS-NAT-Manager/releases/latest">↓ Скачать последний релиз</a>
+    <a class="btn btn-secondary" href="https://github.com/iMironRU/RNDIS-NAT-Manager">Исходный код на GitHub</a>
+  </div>
+</header>
+
+<section id="demo">
+  <div class="wrap">
+    <div class="terminal">
+      <div class="titlebar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="fname mono">Администратор: RNDIS-NAT-Manager.exe</span>
+      </div>
+      <pre class="mono"><span class="t-cyan">╔════════════════════════════════════════════════╗
+║      ICS / NAT менеджер для RNDIS-ККМ           ║
+╚════════════════════════════════════════════════╝
+
+── Состояние ──────────────────────────────────</span>
+<span class="t-magenta">Режим         : WinNAT   (сменить — [M])</span>
+<span class="t-green">RNDIS-адаптер : Ethernet 2  [Remote NDIS based Internet Sharing Device]</span>
+  Статус      : Up
+  IP          : 192.168.137.1/24
+<span class="t-green">NAT 'RndisNat'  : активен на 192.168.137.0/24</span>
+<span class="t-green">Автозапуск    : установлен (WinNAT)</span>
+Шлюз / ККМ    : 192.168.137.1  -&gt;  192.168.137.100
+<span class="t-cyan">────────────────────────────────────────────────</span>
+<span class="t-green">  ✓ РАЗДАЧА РАБОТАЕТ и настроена пережить перезагрузку</span>
+<span class="t-dim">  (это проверка настройки; факт интернета на кассе смотри через [4])</span>
+<span class="t-cyan">────────────────────────────────────────────────</span>
+
+  [1] Включить раздачу (WinNAT)
+  [4] Проверить связь с ККМ (ping)
+  [6] Установить автозапуск при загрузке
+  [8] Сбросить / включить классический ICS
+  <span class="t-cyan">[D] Диагностика подключений</span>
+  <span class="t-cyan">[H] Устранить причины отвалов (разово)</span>
+  <span class="t-magenta">[M] Режим: WinNAT (сменить на ICS)</span>
+  [C] Настройки
+
+Выбор: <span class="t-white">_</span></pre>
+    </div>
+  </div>
+</section>
+
+<section id="problem-solution">
+  <div class="wrap">
+    <div class="eyebrow">Почему это вообще нужно</div>
+    <h2>Общий доступ Windows врёт о своём состоянии</h2>
+    <p>Классический ICS хранит статус общего доступа ненадёжно: после перезагрузки, засыпания USB-контроллера или быстрого запуска (Fast Startup) раздача фактически отключается — а чекбокс в свойствах адаптера остаётся визуально включённым. Касса теряет интернет, и это не всегда заметно с первого взгляда.</p>
+    <div class="ps-grid">
+      <div class="ps-card problem">
+        <h3>Было</h3>
+        <ul>
+          <li>Чекбокс «Разрешить общий доступ» включён визуально</li>
+          <li>Реальная раздача не работает после ребута</li>
+          <li>Fast Startup не даёт USB-стеку переинициализироваться</li>
+          <li>USB selective suspend усыпляет RNDIS-адаптер</li>
+          <li>Никакого способа понять, работает раздача или нет, кроме похода к кассе</li>
+        </ul>
+      </div>
+      <div class="ps-card solution">
+        <h3>Стало</h3>
+        <ul>
+          <li>WinNAT (<code class="mono">New-NetNat</code>) — NAT уровня ядра, не зависит от службы ICS</li>
+          <li>Автозапуск от <code class="mono">SYSTEM</code> поднимает раздачу при каждой загрузке</li>
+          <li>Разовый харденинг устраняет Fast Startup / USB suspend / питание адаптера</li>
+          <li>Понятный вердикт в статусе: работает / не переживёт перезагрузку / есть проблема</li>
+          <li>Подробный лог с трассировкой — видно, на каком именно вызове что-то встало</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="modes">
+  <div class="wrap">
+    <div class="eyebrow">Два механизма, один переключатель</div>
+    <h2>WinNAT или классический ICS — по кнопке <code class="mono">[M]</code></h2>
+    <p>На части машин (например, Windows 10 IoT Enterprise LTSC) компонент WinNAT физически отсутствует в образе. Программа умеет работать через оба механизма и не путает их между собой.</p>
+    <div class="modes-grid">
+      <div class="mode-card winnat">
+        <span class="mode-tag">WinNAT — по умолчанию</span>
+        <p>NAT на уровне ядра через <code class="mono">New-NetNat</code>. Не зависит от службы <code class="mono">SharedAccess</code>. DHCP/DNS не раздаёт — на кассе прописывается статический IP.</p>
+      </div>
+      <div class="mode-card ics">
+        <span class="mode-tag">Классический ICS — резерв</span>
+        <p>Через <code class="mono">HNetCfg.HNetShare</code>, включается вручную один раз через саму Windows. Поднимает собственный DHCP — на кассе можно оставить автоматическое получение IP.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="menu">
+  <div class="wrap">
+    <div class="eyebrow">Полное меню</div>
+    <h2>Что умеет программа</h2>
+    <table class="menu-ref">
+      <thead><tr><th>Пункт</th><th>Действие</th></tr></thead>
+      <tbody>
+        <tr><td>1 / 2 / 3</td><td>Включить / выключить / пересоздать раздачу (WinNAT)</td></tr>
+        <tr><td>4</td><td>Проверить связь с ККМ (ping)</td></tr>
+        <tr><td>5</td><td>Выбрать сетевой адаптер вручную</td></tr>
+        <tr><td>6 / 7</td><td>Установить / убрать автозапуск при загрузке</td></tr>
+        <tr><td>8</td><td>Сбросить / включить классический ICS</td></tr>
+        <tr><td>9</td><td>Показать лог</td></tr>
+        <tr><td>D</td><td>Диагностика — проверка всех типовых причин отвалов</td></tr>
+        <tr><td>H</td><td>Устранить причины отвалов автоматически (разово)</td></tr>
+        <tr><td>V</td><td>Подробный TRACE-лог живьём в консоли</td></tr>
+        <tr><td>M</td><td>Переключить режим WinNAT ⇄ ICS</td></tr>
+        <tr><td>C</td><td>Настройки (IP хоста, подсеть, IP ККМ, имя NAT)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="eyebrow">Быстрый старт</div>
+    <h2>Установка</h2>
+    <ol class="steps">
+      <li>Скачать <code>RNDIS-NAT-Manager.exe</code> из <a href="https://github.com/iMironRU/RNDIS-NAT-Manager/releases/latest">последнего релиза</a> — собирается автоматически в CI при каждом теге.</li>
+      <li>Запустить от имени администратора — программа сама запросит повышение прав.</li>
+      <li><strong>[H]</strong> — устранить типовые причины отвалов, затем <strong>[1]</strong> — включить раздачу, затем <strong>[6]</strong> — поставить автозапуск.</li>
+      <li><strong>[D]</strong> — убедиться, что всё исправно.</li>
+      <li>Перезагрузить хост целиком и проверить, что статус остался зелёным сам по себе — это единственное реальное доказательство, что раздача переживает перезагрузку.</li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <a href="https://github.com/iMironRU/RNDIS-NAT-Manager">GitHub</a>
+  <span class="sep">·</span>
+  <a href="https://github.com/iMironRU/RNDIS-NAT-Manager/releases">Releases</a>
+  <span class="sep">·</span>
+  <a href="https://github.com/iMironRU/RNDIS-NAT-Manager/blob/main/README.md">README</a>
+  <span class="sep">·</span>
+  <a href="https://github.com/iMironRU/RNDIS-NAT-Manager/blob/main/LICENSE">MIT License</a>
+</footer>
+
+</body>
+</html>
