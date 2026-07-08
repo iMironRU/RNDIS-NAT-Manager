@@ -359,7 +359,16 @@ function Enable-Nat {
         } catch {
             Write-Log ("Не удалось создать NAT: {0}" -f $_.Exception.Message) 'ERROR'
             if ($_.Exception.Message -match 'класс|class') {
-                Write-Log 'Похоже на сломанный провайдер WMI для NetNat (ROOT\StandardCimv2\MSFT_NetNat). Проверь: Get-CimClass -Namespace root/StandardCimv2 -ClassName MSFT_NetNat. Временный обход — классический ICS, пункт [8].' 'WARN'
+                $edition = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name ProductName -ErrorAction SilentlyContinue).ProductName
+                if ($edition -match 'IoT|LTSC') {
+                    # Подтверждено руками на 26100 IoT Enterprise LTSC 2024: MSFT_NetNat
+                    # отсутствует не только в реестре WMI, но и во ВСЕХ .mof на диске —
+                    # компонент не входит в это издание, это не поломка. sfc/DISM/mofcomp/
+                    # winmgmt не помогут, чинить нечего — переключайся на ICS: [M], затем [8].
+                    Write-Log ("WinNAT (MSFT_NetNat) не входит в это издание Windows: '{0}'. Это типично для IoT/LTSC-сборок — компонент отсутствует в образе, не сломан. Не трать время на sfc/DISM/WMI — переключись на классический ICS: [M], затем [8]." -f $edition) 'WARN'
+                } else {
+                    Write-Log 'Похоже на сломанный провайдер WMI для NetNat (ROOT\StandardCimv2\MSFT_NetNat). Проверь: Get-CimClass -Namespace root/StandardCimv2 -ClassName MSFT_NetNat. Временный обход — классический ICS, пункт [8].' 'WARN'
+                }
             }
             return
         }
@@ -555,6 +564,17 @@ function Test-Diag {
         if (-not $Ok -and $Hint) { $script:DiagHints += $Hint }
     }
 
+    # Издание Windows — на IoT/LTSC сборках MSFT_NetNat нередко физически отсутствует
+    # в образе (не входит в компонентный состав), а не "сломан". sfc/DISM/mofcomp/
+    # winmgmt это не чинят — единственный выход тогда: режим ICS.
+    $edition = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name ProductName -ErrorAction SilentlyContinue).ProductName
+    $isIotLtsc = [bool]($edition -match 'IoT|LTSC')
+    if ($Config.Mode -eq 'WinNAT') {
+        Add-Row 'Издание Windows' (-not $isIotLtsc) $edition $(if ($isIotLtsc) { 'W' } else { $null })
+    } else {
+        Add-Row 'Издание Windows' $true $edition $null
+    }
+
     # Служба WinNat
     $winnat = Invoke-Logged 'Get-Service(WinNat)' { Get-Service WinNat -ErrorAction SilentlyContinue }
     Add-Row 'Служба WinNat работает' ($winnat -and $winnat.Status -eq 'Running') `
@@ -645,6 +665,7 @@ function Test-Diag {
     }
     if ($script:DiagHints -contains 'I') { Write-Host '  -> Отключи ICS: пункт [8]. Либо это осознанный выбор — смени режим на ICS: [M].' -ForegroundColor Yellow }
     if ($script:DiagHints -contains 'T') { Write-Host '  -> Поставь автозапуск: пункт [6].' -ForegroundColor Yellow }
+    if ($script:DiagHints -contains 'W') { Write-Host '  -> Это IoT/LTSC-издание Windows — WinNAT в нём часто отсутствует физически (не входит в образ), не чинится. Переключись на ICS: [M].' -ForegroundColor Yellow }
     if ($script:DiagHints.Count -eq 0)   { Write-Host '  Всё в порядке.' -ForegroundColor Green }
     Write-Log '=== Test-Diag: конец ===' 'TRACE'
 }
