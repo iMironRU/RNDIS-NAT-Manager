@@ -15,16 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ps2exe
+      - name: Install ps12exe
         shell: powershell
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module -Name ps2exe -Force -Scope CurrentUser
+          Install-Module -Name ps12exe -Force -Scope CurrentUser
 
       - name: Build EXE
         shell: powershell
         run: |
-          Invoke-ps2exe -inputFile .\RNDIS-NAT-Manager.ps1 -outputFile .\RNDIS-NAT-Manager.exe -requireAdmin -title "RNDIS NAT Manager"
+          ps12exe -inputFile .\RNDIS-NAT-Manager.ps1 -outputFile .\RNDIS-NAT-Manager.exe -Os @{Admin=$true} -Resources @{Title='RNDIS NAT Manager'}
 
       - uses: actions/upload-artifact@v4
         with:
