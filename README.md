@@ -99,11 +99,11 @@ Windows ICS (Internet Connection Sharing) хранит своё состояни
 ## Сборка из исходников
 
 ```powershell
-Install-Module ps2exe
-Invoke-ps2exe .\RNDIS-NAT-Manager.ps1 .\RNDIS-NAT-Manager.exe -requireAdmin -title "RNDIS NAT Manager"
+Install-Module ps12exe
+ps12exe .\RNDIS-NAT-Manager.ps1 .\RNDIS-NAT-Manager.exe -Os @{Admin=$true} -Resources @{Title='RNDIS NAT Manager'}
 ```
 
-Собирать **без** `-noConsole` — интерактивному меню нужна консоль.
+Собирать **без** `-App @{Windowed=$true}` — интерактивному меню нужна консоль.
 
 ### Автосборка в CI
 

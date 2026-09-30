@@ -7,7 +7,7 @@
     и сохраняются в C:\ProgramData\RNDIS-NAT-Manager\config.json — править код
     или перекомпилировать exe не нужно.
 
-    Работает одинаково как .ps1 и как скомпилированный .exe (ps2exe):
+    Работает одинаково как .ps1 и как скомпилированный .exe (ps12exe):
     пути, самоповышение прав и задача автозапуска определяют режим автоматически.
 
     Механизм — WinNAT (New-NetNat), переживающий перезагрузку. WinNAT не раздаёт
@@ -18,9 +18,9 @@
         DNS   : 1.1.1.1 / 8.8.8.8
 
 .NOTES
-    Компилировать БЕЗ -noConsole (нужна консоль для меню), желательно с -requireAdmin.
-        Install-Module ps2exe
-        Invoke-ps2exe .\RNDIS-NAT-Manager.ps1 .\RNDIS-NAT-Manager.exe -requireAdmin -title "RNDIS NAT Manager"
+    Компилировать БЕЗ -App @{Windowed=$true} (нужна консоль для меню), желательно с -Os @{Admin=$true}.
+        Install-Module ps12exe
+        ps12exe .\RNDIS-NAT-Manager.ps1 .\RNDIS-NAT-Manager.exe -Os @{Admin=$true} -Resources @{Title='RNDIS NAT Manager'}
 #>
 
 param([switch]$Auto)   # -Auto: тихий режим для автозапуска (без меню)
@@ -30,7 +30,7 @@ function Get-SelfPath {
     if ($PSCommandPath) { return $PSCommandPath }                 # запуск как .ps1
     try {
         $p = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-        if ($p) { return $p }                                     # запуск как .exe (ps2exe)
+        if ($p) { return $p }                                     # запуск как .exe (ps12exe)
     } catch {}
     return $MyInvocation.MyCommand.Definition
 }
